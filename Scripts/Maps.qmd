@@ -1,0 +1,1567 @@
+---
+title: "Dava Fire Plots"
+format: html
+editor: visual
+---
+
+#Emissions med-scenario map
+
+```{r}
+# --- Packages ---
+library(terra)
+library(sf)
+library(data.table)
+library(ggplot2)
+library(ggspatial)
+library(grid)      # unit()
+library(here)
+
+# --- Inputs ---
+csv  <- paste0(here(),"/Data/Dava_total_emissions_AG_BG_field_BD_CBD_field_measured.csv")
+fire_path <- paste0(here(),"/Data/burnt_area_effis/Dava_fire_perimeter.shp")
+
+# --- Build emissions raster in BNG (EPSG:27700), crop/mask to fire ---
+crs_epsg <- 27700
+crs_str  <- paste0("EPSG:", crs_epsg)
+
+df  <- data.table::fread(csv)
+stopifnot(all(c("x","y","totalCemissions_tC_med") %in% names(df)))
+
+pts <- terra::vect(df, geom = c("x","y"), crs = crs_str)
+
+dx <- stats::median(diff(sort(unique(df$x))), na.rm = TRUE)
+dy <- stats::median(diff(sort(unique(df$y))), na.rm = TRUE)
+if (!is.finite(dx) || dx <= 0) dx <- (max(df$x) - min(df$x)) / 200
+if (!is.finite(dy) || dy <= 0) dy <- (max(df$y) - min(df$y)) / 200
+
+ext <- terra::ext(min(df$x) - dx/2, max(df$x) + dx/2,
+                  min(df$y) - dy/2, max(df$y) + dy/2)
+r_tmpl <- terra::rast(ext, resolution = c(dx, dy), crs = crs_str)
+
+r <- terra::rasterize(pts, r_tmpl, field = "totalCemissions_tC_med", fun = "mean")
+names(r) <- "tC_med"
+
+fire <- sf::st_read(fire_path, quiet = TRUE)
+if (!is.na(sf::st_crs(fire)) && sf::st_crs(fire)$epsg != crs_epsg) {
+  fire <- sf::st_transform(fire, crs_epsg)
+}
+r <- terra::mask(terra::crop(r, terra::vect(fire), snap = "out"), terra::vect(fire))
+
+# --- Reproject raster + perimeter to WGS84 for lat/lon axes ---
+r_ll    <- terra::project(r, "EPSG:4326", method = "bilinear")
+fire_ll <- sf::st_transform(fire, 4326)
+bb      <- sf::st_bbox(fire_ll)
+
+# --- Cell size in degrees for vector tiles ---
+res_ll <- terra::res(r_ll)  # c(dx_deg, dy_deg)
+
+# --- Raster → data.frame (drop NA so background stays white) ---
+r_df <- as.data.frame(r_ll, xy = TRUE, na.rm = FALSE)
+names(r_df) <- c("lon","lat","tC_med")
+r_df <- r_df[!is.na(r_df$tC_med), ]
+
+# --- Degree-style axis label helpers ---
+label_lon <- function(x) sprintf("%.3f°%s", abs(x), ifelse(x < 0, "W", "E"))
+label_lat <- function(y) sprintf("%.3f°%s", abs(y), ifelse(y < 0, "S", "N"))
+
+# If you’ll make Q25/Q75 maps too and want identical colour scaling, set:
+# fill_limits <- range(r_df$tC_med, na.rm = TRUE)
+fill_limits <- NULL  # auto for this single map
+
+p_emis <- ggplot() +
+  # ---- VECTOR TILES (crisp in EMF/SVG) ----
+  geom_tile(
+    data   = r_df,
+    aes(x = lon, y = lat, fill = tC_med),
+    width  = res_ll[1],
+    height = res_ll[2]
+  ) +
+  geom_sf(data = fire_ll, fill = NA, colour = "black", linewidth = 0.01) +
+  scale_fill_gradientn(
+  colours = c("#F7E8F4", "#C67CC6", "#6A1B9A"),
+  name = "C emissions (MgC)"
+)+
+  #scale_fill_gradient(
+   # low = "#F7E8F4", high = "#A02B93", #high = "#A02B93"
+    #limits = fill_limits, oob = scales::squish,
+    #name = "C emissions (MgC)"
+  #) +
+  coord_sf(
+    crs  = sf::st_crs(4326),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+  scale_x_continuous(labels = label_lon, expand = c(0,0)) +
+  scale_y_continuous(labels = label_lat, expand = c(0,0)) +
+  labs(x = "Longitude (°)", y = "Latitude (°)", title = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid           = element_blank(),
+    panel.background     = element_rect(fill = "white", colour = NA),
+    plot.background      = element_rect(fill = "white", colour = NA),
+    # Legend inside, bottom-right, horizontal
+    legend.position      = c(0.54, 0.15),       # your current left alignment
+    legend.justification = c("left","bottom"),
+    legend.background    = element_rect(fill = scales::alpha("white", 0.85),
+                                        colour = "grey60"),
+    legend.title         = element_text(),
+    legend.key.width     = unit(0.35, "cm"),
+    legend.key.height    = unit(0.35, "cm"),
+    legend.box.margin    = ggplot2::margin(2, 2, 2, 2),
+    legend.margin        = ggplot2::margin(2, 2, 2, 2)
+  ) +
+  guides(
+    fill = guide_colorbar(
+      direction      = "horizontal",
+      title.position = "top",
+      barwidth       = unit(3.6, "cm"),
+      barheight      = unit(0.35, "cm"),
+      ticks          = TRUE
+    )
+  ) +
+  guides(
+    fill = guide_colorbar(
+      direction      = "horizontal",
+      title.position = "top",
+      barwidth       = unit(2.8, "cm"),  # shrink bar to keep box inside
+      barheight      = unit(0.32, "cm"),
+      ticks          = TRUE
+    )
+  ) +
+  # Scale bar: bottom-centre (anchor at BL + big pad_x)
+  ggspatial::annotation_scale(
+    location   = "bl",
+    width_hint = 0.28,
+    pad_x      = unit(0.54, "npc"),
+    pad_y      = unit(0.35, "cm"),
+    bar_cols   = c("grey90","grey30")
+  ) +
+  # North arrow: bottom-right
+  ggspatial::annotation_north_arrow(
+  location = "br", style = north_arrow_orienteering,
+  pad_x = unit(0.3, "cm"), pad_y = unit(0.2, "cm"),
+  height = unit(0.5, "cm"), width = unit(0.2, "cm")
+)
+
+
+print(p_emis)
+
+# (Optional) If tiles make the file too large when saving as EMF/SVG, coarsen first:
+# r_ll <- terra::aggregate(r_ll, fact = 2, fun = "mean"); then rebuild r_df/res_ll.
+
+
+
+
+```
+
+# Emissions map per area
+
+```{r}
+# --- Packages ---
+library(terra)
+library(sf)
+library(data.table)
+library(ggplot2)
+library(ggspatial)
+library(grid)      # unit()
+
+# --- Inputs ---
+csv  <- paste0(here(),"/Data/Dava_total_emissions_AG_BG_field_BD_CBD_field_measured.csv")
+fire_path <- paste0(here(),"/Data/burnt_area_effis/Dava_fire_perimeter.shp")
+
+# --- Build emissions raster in BNG (EPSG:27700), crop/mask to fire ---
+crs_epsg <- 27700
+crs_str  <- paste0("EPSG:", crs_epsg)
+
+df  <- data.table::fread(csv)
+stopifnot(all(c("x","y","totalCemissions_tC_med") %in% names(df)))
+
+pts <- terra::vect(df, geom = c("x","y"), crs = crs_str)
+
+dx <- stats::median(diff(sort(unique(df$x))), na.rm = TRUE)
+dy <- stats::median(diff(sort(unique(df$y))), na.rm = TRUE)
+if (!is.finite(dx) || dx <= 0) dx <- (max(df$x) - min(df$x)) / 200
+if (!is.finite(dy) || dy <= 0) dy <- (max(df$y) - min(df$y)) / 200
+
+ext <- terra::ext(min(df$x) - dx/2, max(df$x) + dx/2,
+                  min(df$y) - dy/2, max(df$y) + dy/2)
+r_tmpl <- terra::rast(ext, resolution = c(dx, dy), crs = crs_str)
+
+r <- terra::rasterize(pts, r_tmpl, field = "totalCemissions_tC_med", fun = "mean")
+names(r) <- "tC_med"
+
+fire <- sf::st_read(fire_path, quiet = TRUE)
+if (!is.na(sf::st_crs(fire)) && sf::st_crs(fire)$epsg != crs_epsg) {
+  fire <- sf::st_transform(fire, crs_epsg)
+}
+r <- terra::mask(terra::crop(r, terra::vect(fire), snap = "out"), terra::vect(fire))
+
+# --- Reproject raster + perimeter to WGS84 for lat/lon axes ---
+r_ll    <- terra::project(r, "EPSG:4326", method = "bilinear")
+fire_ll <- sf::st_transform(fire, 4326)
+bb      <- sf::st_bbox(fire_ll)
+
+# --- Cell size in degrees for vector tiles ---
+res_ll <- terra::res(r_ll)  # c(dx_deg, dy_deg)
+
+# --- Raster → data.frame (drop NA so background stays white) ---
+r_df <- as.data.frame(r_ll, xy = TRUE, na.rm = FALSE)
+names(r_df) <- c("lon","lat","tC_med")
+r_df <- r_df[!is.na(r_df$tC_med), ]
+
+# --- Degree-style axis label helpers ---
+label_lon <- function(x) sprintf("%.3f°%s", abs(x), ifelse(x < 0, "W", "E"))
+label_lat <- function(y) sprintf("%.3f°%s", abs(y), ifelse(y < 0, "S", "N"))
+
+# If you’ll make Q25/Q75 maps too and want identical colour scaling, set:
+# fill_limits <- range(r_df$tC_med, na.rm = TRUE)
+fill_limits <- NULL  # auto for this single map
+
+r_df$tC_med_area <- r_df$tC_med*0.016
+
+p_emis <- ggplot() +
+  # ---- VECTOR TILES (crisp in EMF/SVG) ----
+  geom_tile(
+    data   = r_df,
+    aes(x = lon, y = lat, fill = tC_med_area),
+    width  = res_ll[1],
+    height = res_ll[2]
+  ) +
+  geom_sf(data = fire_ll, fill = NA, colour = "black", linewidth = 0.01) +
+  scale_fill_gradientn(
+  colours = c("#F7E8F4", "#C67CC6", "#6A1B9A"),
+  name = bquote("C emissions (kgC/"*m^2*")"~.(paste("\n")))
+)+
+  #scale_fill_gradient(
+   # low = "#F7E8F4", high = "#A02B93", #high = "#A02B93"
+    #limits = fill_limits, oob = scales::squish,
+    #name = "C emissions (MgC)"
+  #) +
+  coord_sf(
+    crs  = sf::st_crs(4326),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+  scale_x_continuous(labels = label_lon, expand = c(0,0)) +
+  scale_y_continuous(labels = label_lat, expand = c(0,0)) +
+  labs(x = "Longitude (°)", y = "Latitude (°)", title = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid           = element_blank(),
+    panel.background     = element_rect(fill = "white", colour = NA),
+    plot.background      = element_rect(fill = "white", colour = NA),
+    # Legend inside, bottom-right, horizontal
+    legend.position      = c(0.50, 0.15),       # your current left alignment
+    legend.justification = c("left","bottom"),
+    legend.background    = element_rect(fill = scales::alpha("white", 0.85),
+                                        colour = "grey60"),
+    legend.title         = element_text(),
+    legend.key.width     = unit(0.35, "cm"),
+    legend.key.height    = unit(0.35, "cm"),
+    legend.box.margin    = ggplot2::margin(2, 2, 2, 2),
+    legend.margin        = ggplot2::margin(2, 2, 2, 2)
+  ) +
+  guides(
+    fill = guide_colorbar(
+      direction      = "horizontal",
+      title.position = "top",
+      barwidth       = unit(3.6, "cm"),
+      barheight      = unit(0.35, "cm"),
+      ticks          = TRUE
+    )
+  ) +
+  guides(
+    fill = guide_colorbar(
+      direction      = "horizontal",
+      title.position = "top",
+      barwidth       = unit(2.8, "cm"),  # shrink bar to keep box inside
+      barheight      = unit(0.32, "cm"),
+      ticks          = TRUE
+    )
+  ) +
+  # Scale bar: bottom-centre (anchor at BL + big pad_x)
+  ggspatial::annotation_scale(
+    location   = "bl",
+    width_hint = 0.28,
+    pad_x      = unit(0.54, "npc"),
+    pad_y      = unit(0.35, "cm"),
+    bar_cols   = c("grey90","grey30")
+  ) +
+  # North arrow: bottom-right
+  ggspatial::annotation_north_arrow(
+  location = "br", style = north_arrow_orienteering,
+  pad_x = unit(0.3, "cm"), pad_y = unit(0.2, "cm"),
+  height = unit(0.5, "cm"), width = unit(0.2, "cm")
+)
+
+
+print(p_emis)
+```
+
+# Burn severity map (dNBR)
+
+```{r}
+# --- Packages ---
+library(terra)
+library(sf)
+library(ggplot2)
+library(ggspatial)
+library(grid)      # for unit()
+library(scales)
+
+# --- Inputs ---
+perim_shp <- paste0(here(),"/Data/burnt_area_effis/Dava_fire_perimeter.shp")
+
+# Use the classified (categorical) raster you wrote earlier:
+dnbr_cls_path <- paste0(here(),"/Data/Burn severity Sentinel-2/Carr_dNBR_class_unscaled_3035.tif")
+# (Swap to RdNBR if desired)
+# rdnbr_cls_path <- "C:/Users/jscho/Documents/Scotland Megafire/Burn severity Sentinel-2/Carr_RdNBR_class_unscaled_3035.tif"
+
+stopifnot(file.exists(perim_shp), file.exists(dnbr_cls_path))
+
+# --- Load (EPSG:3035), crop/mask just in case ---
+perim_3035 <- terra::vect(perim_shp)
+sev_3035   <- terra::rast(dnbr_cls_path) |> terra::crop(perim_3035) |> terra::mask(perim_3035)
+
+# --- Reproject to WGS84 for lat/lon axes (keep classes with nearest-neighbour) ---
+sev_ll   <- terra::project(sev_3035, "EPSG:4326", method = "near")
+perim_ll <- terra::project(perim_3035, "EPSG:4326") |> sf::st_as_sf()
+
+# --- To data.frame for ggplot ---
+df_sev <- as.data.frame(sev_ll, xy = TRUE, na.rm = TRUE)
+names(df_sev) <- c("lon","lat","sev_id")
+df_sev$sev_id <- as.integer(df_sev$sev_id)
+
+# --- Labels & palette (match class IDs 1..4) ---
+sev_levels <- c("Unchanged","Low","Moderate","High")
+
+sev_cols <- c(
+  "Unchanged" = "#D9DDDC",  # same grey
+  "Low"       = "#FEE0D2",  # light red
+  "Moderate"  = "#FC9272",  # mid red
+  "High"    = "#CB181D"   # deeper, less neon than #FF0000
+)
+df_sev$sev_name <- factor(df_sev$sev_id, levels = 1:4, labels = sev_levels)
+
+# --- Common bbox for tight framing ---
+bb <- sf::st_bbox(perim_ll)
+
+# --- Degree labelers (simple degree symbol) ---
+label_lon <- scales::label_number(accuracy = 0.01, suffix = "°")
+label_lat <- scales::label_number(accuracy = 0.01, suffix = "°")
+
+# --- Plot (layout matched to your emissions map) ---
+p_sev <- ggplot() +
+  geom_raster(data = df_sev, aes(x = lon, y = lat, fill = sev_name), interpolate = FALSE) +
+  geom_sf(data = perim_ll, fill = NA, colour = "black", linewidth = 0.01) +
+  scale_fill_manual(values = sev_cols, name = "Burn severity\n(dNBR)", drop = FALSE) +
+  coord_sf(crs = sf::st_crs(4326),
+           xlim = c(bb["xmin"], bb["xmax"]),
+           ylim = c(bb["ymin"], bb["ymax"]),
+           expand = FALSE) +
+  scale_x_continuous(labels = label_lon, expand = c(0,0)) +
+  scale_y_continuous(labels = label_lat, expand = c(0,0)) +
+  labs(x = "Longitude (°)", y = "Latitude (°)", title = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid           = element_blank(),
+    panel.background     = element_rect(fill = "white", colour = NA),
+    plot.background      = element_rect(fill = "white", colour = NA),
+    # Legend inside; LEFT edge lines up with scalebar
+    legend.position      = c(0.54, 0.10),
+    legend.justification = c("left","bottom"),
+    legend.direction     = "vertical",
+    legend.background    = element_rect(fill = scales::alpha("white", 0.85),
+                                        colour = "grey60"),
+    legend.title         = element_text(),
+    legend.key.width     = unit(0.35, "cm"),
+    legend.key.height    = unit(0.35, "cm"),
+    legend.box.margin    = ggplot2::margin(2, 2, 2, 2),
+    legend.margin        = ggplot2::margin(2, 2, 2, 2)
+  ) +
+  guides(
+    fill = guide_legend(
+      ncol = 1, byrow = TRUE, title.position = "top",
+      keywidth  = unit(0.35, "cm"),
+      keyheight = unit(0.35, "cm")
+    )
+  ) +
+  ggspatial::annotation_scale(
+    location   = "bl",
+    width_hint = 0.28,
+    pad_x      = unit(0.54, "npc"),
+    pad_y      = unit(0.35, "cm"),
+    bar_cols   = c("grey90","grey30")
+  ) +
+  ggspatial::annotation_north_arrow(
+    location = "br", style = north_arrow_orienteering,
+    pad_x = unit(0.3, "cm"), pad_y = unit(0.2, "cm"),
+    height = unit(0.5, "cm"), width = unit(0.2, "cm")
+  )
+
+
+print(p_sev)
+
+```
+
+#Emissions and severity plots
+
+```{r}
+library(cowplot)
+
+# (optional) tiny margins so labels don't get clipped
+p_sev2  <- p_sev  + theme(plot.margin = ggplot2::margin(3, 3, 3, 3))
+p_emis2 <- p_emis + theme(plot.margin = ggplot2::margin(3, 3, 3, 3))
+p_bar_emissions <- p_bar_emissions + theme(plot.margin = margin(3, 3, 3, 3))
+p_bar_ba <- p_bar_ba + theme(plot.margin = margin(3, 3, 3, 3))
+
+combo_ab <- plot_grid(
+  p_sev2, p_emis2,
+  ncol = 2, rel_widths = c(1, 1),
+  labels = c("a)", "b)"),
+  label_size = 12, label_fontface = "bold",
+  # move labels down a touch
+  label_y = c(0.92, 0.92),   # try 0.88 or 0.85 for lower
+  label_x = c(0.1, 0.1),   # keep a small left inset
+  hjust = 0, vjust = 1
+)
+
+
+print(combo_ab)
+
+# Optional save
+
+library(devEMF)
+
+out_emf <- "C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/Figures/severity_vs_emissions_ab.emf"
+
+ggsave(
+  filename  = out_emf,
+  plot      = combo_ab,
+  device    = function(filename, ...) devEMF::emf(filename, emfPlus = TRUE, family = "Arial", ...),
+  width     = 12, height = 6.5, units = "in",
+  bg        = "white",          # <-- pass bg here (not inside emf())
+  limitsize = FALSE
+)
+
+
+```
+
+# Landcover plots
+
+```{r}
+# --- Packages ---
+library(terra)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(ggspatial)
+library(grid)      # for unit()
+library(cowplot)
+
+# --- Inputs ---
+perim_shp <- paste0(here(),"/Data/burnt_area_effis/Dava_fire_perimeter.shp")
+lc_path   <- paste0(here(),"/Data/Land cover map/ukregion-scotland.tif")
+
+# --- Original LC key (21 classes) ---
+lc_codes <- 1:21
+lc_names <- c(
+  "Broadleaved woodland","Coniferous Woodland","Arable and Horticulture",
+  "Improved Grassland","Neutral Grassland","Calcareous Grassland",
+  "Acid grassland","Fen, Marsh and Swamp","Heather","Heather grassland",
+  "Bog","Inland Rock","Saltwater","Freshwater","Supralittoral Rock",
+  "Supralittoral Sediment","Littoral Rock","Littoral sediment",
+  "Saltmarsh","Urban","Suburban"
+)
+lc_cols <- c(
+  "#FF0000","#006600","#732600","#00FF00","#7FE57F","#70A800","#998100",
+  "#FFFF00","#801A80","#E68CA6","#008073","#D2D2FF","#000080","#0000FF",
+  "#CCB300","#CCB300","#FFFF80","#FFFF80","#8080FF","#000000","#808080"
+)
+
+# --- Load + clip to perimeter (fast path) ---
+perim <- terra::vect(perim_shp)
+lc    <- terra::rast(lc_path)
+perim_lc <- if (!terra::same.crs(perim, lc)) terra::project(perim, terra::crs(lc)) else perim
+lc_cm    <- terra::mask(terra::crop(lc, perim_lc, snap = "out"), perim_lc)
+lc1      <- lc_cm[[1]]
+
+# =========================
+# A) Original land-cover map
+# =========================
+lc1_ll   <- terra::project(lc1, "EPSG:4326", method = "near")
+perim_ll <- terra::project(perim_lc, "EPSG:4326") |> sf::st_as_sf()
+
+df_orig <- as.data.frame(lc1_ll, xy = TRUE, na.rm = TRUE)
+names(df_orig) <- c("lon", "lat", "lc_id")
+df_orig$lc_id <- as.integer(df_orig$lc_id)
+
+present_ids   <- sort(unique(df_orig$lc_id))
+present_names <- lc_names[match(present_ids, lc_codes)]
+present_cols  <- lc_cols [match(present_ids, lc_codes)]
+names(present_cols) <- present_names
+
+df_orig$lc_name <- factor(df_orig$lc_id, levels = present_ids, labels = present_names)
+
+# Common bbox
+bb <- sf::st_bbox(perim_ll)
+
+# Helper: styled map with your requested placements
+make_map <- function(df, fill_col, fill_name, col_vec, perim, bb) {
+  ggplot() +
+    geom_raster(
+      data = df,
+      aes(x = lon, y = lat, fill = .data[[fill_col]]),
+      interpolate = FALSE, na.rm = TRUE
+    ) +
+    geom_sf(data = perim, fill = NA, colour = "black", linewidth = 0.01) +
+    scale_fill_manual(values = col_vec, name = fill_name, drop = FALSE) +
+    coord_sf(
+      crs  = sf::st_crs(4326),
+      xlim = c(bb["xmin"], bb["xmax"]),
+      ylim = c(bb["ymin"], bb["ymax"]),
+      expand = FALSE
+    ) +
+    labs(x = "Longitude (°)", y = "Latitude (°)", title = NULL) +
+    theme_bw(base_size = 11) +
+    theme(
+      panel.grid           = element_blank(),
+      # Legend: bottom-right inside panel
+      legend.position      = c(0.97, 0.1),
+      legend.justification = c("right", "bottom"),
+      legend.direction     = "vertical",
+      legend.background    = element_rect(fill = scales::alpha("white", 0.8),
+                                          colour = "grey60"),
+      legend.title         = element_text(),
+      legend.key.height    = unit(0.45, "cm"),
+      legend.key.width     = unit(0.45, "cm")
+    ) +
+      ggspatial::annotation_scale(
+    location   = "bl",
+    width_hint = 0.28,
+    pad_x      = unit(0.55, "npc"),
+    pad_y      = unit(0.35, "cm"),
+    bar_cols   = c("grey90","grey30")
+  ) +
+  # North arrow: bottom-right
+  ggspatial::annotation_north_arrow(
+  location = "br", style = north_arrow_orienteering,
+  pad_x = unit(0.3, "cm"), pad_y = unit(0.2, "cm"),
+  height = unit(0.8, "cm"), width = unit(0.6, "cm")
+  )
+}
+
+p_orig <- make_map(
+  df = df_orig, fill_col = "lc_name",
+  fill_name = "Land cover",
+  col_vec = present_cols, perim = perim_ll, bb = bb
+)
+
+library(stringr)
+
+legend_cols <- 2
+wrap_width  <- 16  # or nudge smaller/bigger as you like
+
+labs_wrapped <- str_wrap(present_names, width = wrap_width)
+
+p_orig <- p_orig +
+  scale_fill_manual(
+    values = setNames(present_cols, present_names),
+    breaks = present_names,
+    labels = labs_wrapped,
+    name   = "Land cover"
+  ) +
+  guides(
+    fill = guide_legend(
+      ncol      = legend_cols,
+      byrow     = TRUE,
+      title.position = "top",
+      # widen each column but keep square keys
+      keywidth  = unit(0.55, "cm"),
+      keyheight = unit(0.55, "cm")
+    )
+  ) +
+  theme(
+    # keep keys square & a bit larger
+    legend.key.width   = unit(0.55, "cm"),
+    legend.key.height  = unit(0.55, "cm"),
+    legend.key.size    = unit(0.55, "cm"),
+    # add spacing BETWEEN columns
+    legend.spacing.x   = unit(0.35, "cm"),
+    # (optional) a touch of extra line spacing inside items
+    legend.text        = element_text(lineheight = 1.05)
+  )
+
+
+# =========================
+# B) Recoded 4-class map
+# =========================
+lc4 <- terra::ifel(lc1 == 11, 1,
+                   terra::ifel(lc1 %in% c(9,10), 2,
+                               terra::ifel(lc1 == 2, 3, 4)))
+
+lc4_names <- c("Bog", "Moorlands and Heathlands",
+               "Forests and woodlands", "Other Natural and Managed Lands")
+
+lc4_cols <- c(
+  "Bog"                       = "#008073",
+  "Moorlands and Heathlands"        = "#801A80",
+  "Forests and woodlands"           = "#006600",
+  "Other Natural and Managed Lands" = "#D9D9D9"
+)
+
+lc4_ll  <- terra::project(lc4, "EPSG:4326", method = "near")
+df_rec  <- as.data.frame(lc4_ll, xy = TRUE, na.rm = TRUE)
+names(df_rec) <- c("lon","lat","class4")
+df_rec$class4 <- factor(df_rec$class4, levels = 1:4, labels = lc4_names)
+lc4_cols <- lc4_cols[levels(df_rec$class4)]
+
+p_recoded <- make_map(
+  df = df_rec, fill_col = "class4",
+  fill_name = "Land cover (recoded)",
+  col_vec = lc4_cols, perim = perim_ll, bb = bb
+)
+
+# =========================
+# C) Stack vertically
+# =========================
+combo <- cowplot::plot_grid(
+  p_orig, p_recoded,
+  ncol = 2, rel_widths = c(1, 1),
+  labels = c("a)", "b)"),
+  label_size = 12, label_fontface = "bold",
+  # move labels down a touch
+  label_y = c(0.92, 0.92),   # try 0.88 or 0.85 for lower
+  label_x = c(0.1, 0.1),   # keep a small left inset
+  hjust = 0, vjust = 1
+)
+print(combo)
+
+
+# Save output
+
+library(devEMF)
+
+out_emf <- paste0(here(),"/Figures/landcover_maps.emf")
+
+ggsave(
+  filename  = out_emf,
+  plot      = combo,
+  device    = function(filename, ...) devEMF::emf(filename, emfPlus = TRUE, family = "Arial", ...),
+  width     = 12, height = 6.5, units = "in",
+  bg        = "white",          # <-- pass bg here (not inside emf())
+  limitsize = FALSE
+)
+
+```
+
+# Landcover maps with field sampling locations
+
+```{r}
+# ========================= FULL SCRIPT =========================
+# Original & recoded land-cover maps + field points (neon orange)
+# ===============================================================
+# ========================= FULL SCRIPT (points guaranteed visible) =========================
+library(terra)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(ggspatial)
+library(grid)      # for unit()
+library(cowplot)
+library(stringr)
+
+# --- Inputs ---
+perim_shp <- paste0(here(),"/Data/burnt_area_effis/Dava_fire_perimeter.shp")
+lc_path   <- paste0(here(),"/Data/Land cover map/ukregion-scotland.tif")
+pts_path  <- paste0(here(),"/Data/Fieldwork and data/PDP_points_landcover_sev.shp")
+
+# --- LC key (21 classes) ---
+lc_codes <- 1:21
+lc_names <- c(
+  "Broadleaved woodland","Coniferous Woodland","Arable and Horticulture",
+  "Improved Grassland","Neutral Grassland","Calcareous Grassland",
+  "Acid grassland","Fen, Marsh and Swamp","Heather","Heather grassland",
+  "Bog","Inland Rock","Saltwater","Freshwater","Supralittoral Rock",
+  "Supralittoral Sediment","Littoral Rock","Littoral sediment",
+  "Saltmarsh","Urban","Suburban"
+)
+lc_cols <- c(
+  "#FF0000","#006600","#732600","#00FF00","#7FE57F","#70A800","#998100",
+  "#FFFF00","#801A80","#E68CA6","#008073","#D2D2FF","#000080","#0000FF",
+  "#CCB300","#CCB300","#FFFF80","#FFFF80","#8080FF","#000000","#808080"
+)
+
+# --- Load + clip LC to perimeter (fast path) ---
+perim <- terra::vect(perim_shp)
+lc    <- terra::rast(lc_path)
+perim_lc <- if (!terra::same.crs(perim, lc)) terra::project(perim, terra::crs(lc)) else perim
+lc_cm    <- terra::mask(terra::crop(lc, perim_lc, snap = "out"), perim_lc)
+lc1      <- lc_cm[[1]]
+
+# --- Reproject to WGS84 for plotting with lat/lon axes ---
+lc1_ll   <- terra::project(lc1, "EPSG:4326", method = "near")
+perim_ll <- terra::project(perim_lc, "EPSG:4326") |> sf::st_as_sf()
+bb       <- sf::st_bbox(perim_ll)
+
+# --- Original LC df ---
+df_orig <- as.data.frame(lc1_ll, xy = TRUE, na.rm = TRUE)
+names(df_orig) <- c("lon", "lat", "lc_id")
+df_orig$lc_id <- as.integer(df_orig$lc_id)
+
+present_ids   <- sort(unique(df_orig$lc_id))
+present_names <- lc_names[match(present_ids, lc_codes)]
+present_cols  <- lc_cols [match(present_ids, lc_codes)]
+names(present_cols) <- present_names
+
+df_orig$lc_name <- factor(df_orig$lc_id, levels = present_ids, labels = present_names)
+
+# --- Recoded 4-class raster ---
+lc4 <- terra::ifel(lc1 == 11, 1,
+                   terra::ifel(lc1 %in% c(9,10), 2,
+                               terra::ifel(lc1 == 2, 3, 4)))
+lc4_names <- c("Bog", "Moorlands and Heathlands",
+               "Forests and woodlands", "Other Natural and Managed Lands")
+lc4_cols <- c(
+  "Bog"                       = "#008073",
+  "Moorlands and Heathlands"        = "#801A80",
+  "Forests and woodlands"           = "#006600",
+  "Other Natural and Managed Lands" = "#D9D9D9"
+)
+lc4_ll  <- terra::project(lc4, "EPSG:4326", method = "near")
+df_rec  <- as.data.frame(lc4_ll, xy = TRUE, na.rm = TRUE)
+names(df_rec) <- c("lon","lat","class4")
+df_rec$class4 <- factor(df_rec$class4, levels = 1:4, labels = lc4_names)
+lc4_cols <- lc4_cols[levels(df_rec$class4)]
+
+# --- Field points: drop Z/M, reproject, buffer-perimeter filter (60 m) ---
+pts_raw <- sf::st_read(pts_path, quiet = TRUE) |> sf::st_zm(drop = TRUE, what = "ZM")
+pts_ll  <- sf::st_transform(pts_raw, 4326)
+
+perim_buf_ll <- perim_ll |>
+  sf::st_transform(32630) |>
+  sf::st_buffer(60) |>            # 60 m buffer to keep edge points
+  sf::st_transform(4326)
+
+# keep only points intersecting buffered perimeter
+pts_ll_in <- sf::st_filter(pts_ll, perim_buf_ll, .predicate = sf::st_intersects)
+message("Field points: total=", nrow(pts_ll), " | inside (buffered)=", nrow(pts_ll_in))
+
+# --- Map helper (points added LAST, on top) ---
+NEON_ORANGE <- "#FFA500"
+
+make_map <- function(df, fill_col, fill_name, col_vec, perim, bb, pts_on_top = NULL) {
+  p <- ggplot() +
+    geom_raster(
+      data = df,
+      aes(x = lon, y = lat, fill = .data[[fill_col]]),
+      interpolate = FALSE, na.rm = TRUE
+    ) +
+    geom_sf(data = perim, fill = NA, colour = "black", linewidth = 0.01) +
+    scale_fill_manual(values = col_vec, name = fill_name, drop = FALSE) +
+    coord_sf(
+      crs  = sf::st_crs(4326),
+      xlim = c(bb["xmin"], bb["xmax"]),
+      ylim = c(bb["ymin"], bb["ymax"]),
+      expand = FALSE
+    ) +
+    labs(x = "Longitude (°)", y = "Latitude (°)", title = NULL) +
+    theme_bw(base_size = 11) +
+    theme(
+      panel.grid           = element_blank(),
+      legend.position      = c(0.97, 0.10),
+      legend.justification = c("right", "bottom"),
+      legend.direction     = "vertical",
+      legend.background    = element_rect(fill = scales::alpha("white", 0.8),
+                                          colour = "grey60"),
+      legend.title         = element_text(),
+      legend.key.height    = unit(0.45, "cm"),
+      legend.key.width     = unit(0.45, "cm")
+    ) +
+    ggspatial::annotation_scale(
+      location   = "bl",
+      width_hint = 0.28,
+      pad_x      = unit(0.65, "npc"),
+      pad_y      = unit(0.35, "cm"),
+      bar_cols   = c("grey90","grey30")
+    ) +
+    ggspatial::annotation_north_arrow(
+      location = "br", style = north_arrow_orienteering,
+      pad_x = unit(0.3, "cm"), pad_y = unit(0.2, "cm"),
+      height = unit(0.5, "cm"), width = unit(0.4, "cm")
+    )
+
+  if (!is.null(pts_on_top) && nrow(pts_on_top) > 0) {
+    p <- p +
+      geom_sf(
+        data = pts_on_top, inherit.aes = FALSE,
+        shape = 21, fill = NEON_ORANGE, colour = "#FF6E00",
+        size = 1, stroke = 0.35, alpha = 1, show.legend = FALSE
+      )
+  }
+  p
+}
+
+# --- Build plots (with points last) ---
+p_orig <- make_map(
+  df = df_orig, fill_col = "lc_name",
+  fill_name = "Land cover",
+  col_vec = present_cols, perim = perim_ll, bb = bb,
+  pts_on_top = pts_ll_in
+)
+
+# Wrap long legend labels to 2 columns (original LC only)
+legend_cols <- 2
+wrap_width  <- 16
+labs_wrapped <- str_wrap(present_names, width = wrap_width)
+p_orig <- p_orig +
+  scale_fill_manual(
+    values = setNames(present_cols, present_names),
+    breaks = present_names,
+    labels = labs_wrapped,
+    name   = "Land cover"
+  ) +
+  guides(fill = guide_legend(ncol = legend_cols, byrow = TRUE, title.position = "top",
+                             keywidth = unit(0.55,"cm"), keyheight = unit(0.55,"cm"))) +
+  theme(legend.key.width = unit(0.55,"cm"),
+        legend.key.height= unit(0.55,"cm"),
+        legend.key.size  = unit(0.55,"cm"),
+        legend.spacing.x = unit(0.35,"cm"),
+        legend.text      = element_text(lineheight = 1.05))
+
+p_recoded <- make_map(
+  df = df_rec, fill_col = "class4",
+  fill_name = "Land cover (recoded)",
+  col_vec = lc4_cols, perim = perim_ll, bb = bb,
+  pts_on_top = pts_ll_in
+)
+
+# --- Arrange side by side with labels ---
+
+combo <- cowplot::plot_grid(
+  p_orig, p_recoded,
+  ncol = 1, rel_widths = c(1, 1),
+  labels = c("a)", "b)"),
+  label_size = 12, label_fontface = "bold",
+  # put labels at the top-right of each panel
+  label_x = c(0.15, 0.15),   # closer to 1 = further right
+  label_y = c(0.98, 0.98),     # near top
+  hjust = 1, vjust = 1
+)
+print(combo)
+
+#Save to file
+# Save output
+
+library(devEMF)
+
+out_emf <- paste0(here(),"/Figures/landcover_maps_fieldpoints.emf")
+
+ggsave(
+  filename  = out_emf,
+  plot      = combo,
+  device    = function(filename, ...) devEMF::emf(filename, emfPlus = TRUE, family = "Arial", ...),
+  width     = 210, height = 297, units = "mm",   # A4 portrait
+  bg        = "white",          # <-- pass bg here (not inside emf())
+  limitsize = FALSE
+)
+
+# Save as pdf
+ggsave(
+  filename = paste0(here(),"/Figures/landcover_sampling_loc.pdf"),
+  plot     = combo,
+  device   = cairo_pdf,        # vector PDF with good font support
+  width    = 8.27, height = 10, units = "in",
+  bg       = "white",
+  limitsize = FALSE
+)
+
+```
+
+# Emissions bar chart
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+out <- fread(paste0(here(),"/Data/Dava_total_emissions_AG_BG_field_BD_CBD_field_measured.csv")) 
+
+# sanity check: required columns exist in `out`
+stopifnot(all(c("Woodland","Moorland and Heathland","AG peatland","Other",
+                "BG_moor_med","BG_peat_med") %in% names(out)))
+
+# 1) Totals per land-cover category
+totals <- tibble(
+  category = c("Forests and Woodlands", "Moorlands and Heathlands",
+               "Peatlands", "Other"),
+  AG = c(
+    sum(out$Woodland, na.rm = TRUE),
+    sum(out$`Moorland and Heathland`, na.rm = TRUE),
+    sum(out$`AG peatland`, na.rm = TRUE),
+    sum(out$Other, na.rm = TRUE)
+  ),
+  BG = c(
+    0,
+    sum(out$BG_moor_med, na.rm = TRUE),
+    sum(out$BG_peat_med, na.rm = TRUE),
+    0
+  )
+)
+
+# 2) Long format for stacked bars
+plot_df <- totals |>
+  pivot_longer(cols = c(AG, BG), names_to = "Component", values_to = "Emissions_tC") |>
+  mutate(
+    category = factor(category,
+      levels = c("Forests and Woodlands","Moorlands and Heathlands","Peatlands","Other")),
+    Component = factor(Component, levels = c("AG","BG"),
+                       labels = c("Aboveground","Peat"))
+  )
+
+# 3) Plot (no total labels)
+lab_map <- c(
+  "Forests and Woodlands"    = "Forests &\n Woodlands",
+  "Moorlands and Heathlands" = "Moorlands &\n Heathlands",
+  "Peatlands"                = "Bog",
+  "Other"                    = "Other"
+)
+
+p_bar_emissions <- ggplot(plot_df, aes(x = category, y = Emissions_tC, fill = Component)) +
+  geom_col(width = 0.7, colour = "black", linewidth = 0.2) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_x_discrete(labels = lab_map) +
+  scale_fill_manual(values = c("Aboveground" = "#8A9A5B", "Peat" = "#895129"),
+                    name = "Contribution") +
+  labs(x = "Land cover type", y = "Carbon emissions (MgC)", title = NULL) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x  = element_text(angle = 0, hjust = 0.5, vjust = 1, lineheight = 0.95),
+    axis.title.x = element_text(margin = ggplot2::margin(t = 6)),
+    legend.position      = c(1, 0.5),
+    legend.justification = c("right", "top"),
+    legend.background    = element_rect(fill = scales::alpha("white", 0.85),
+                                        colour = "grey60"),
+    legend.key.width     = unit(0.5, "cm"),
+    legend.key.height    = unit(0.5, "cm")
+  ) +
+  guides(
+    fill = guide_legend(
+      title.position = "top",
+      ncol = 1, byrow = TRUE,
+      keywidth  = unit(0.5, "cm"),
+      keyheight = unit(0.5, "cm")
+    )
+  )
+
+
+
+print(p_bar_emissions)
+
+
+
+
+```
+
+# Barplot veg type severity
+
+```{r}
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(scales)
+
+# helper
+sum_area_ha <- function(df) if (is.null(df) || nrow(df) == 0) 0 else sum(df$count, na.rm = TRUE) * 0.01
+
+# data for plot
+plot_df <- tribble(
+  ~Category,                   ~Severity,   ~Area_ha,
+  "Forests and Woodlands",     "Low",       sum_area_ha(counts_forest_low),
+  "Forests and Woodlands",     "Moderate",  sum_area_ha(counts_forest_moderate),
+  "Forests and Woodlands",     "High",      sum_area_ha(counts_forest_high),
+  "Moorlands and Heathlands",  "Low",       sum_area_ha(counts_moorlands_low),
+  "Moorlands and Heathlands",  "Moderate",  sum_area_ha(counts_moorlands_moderate),
+  "Moorlands and Heathlands",  "High",      sum_area_ha(counts_moorlands_high),
+  "Peatlands",                 "Low",       sum_area_ha(counts_peatlands_low),
+  "Peatlands",                 "Moderate",  sum_area_ha(counts_peatlands_moderate),
+  "Peatlands",                 "High",      sum_area_ha(counts_peatlands_high),
+  "Other",                     "Low",       sum_area_ha(counts_other_low),
+  "Other",                     "Moderate",  sum_area_ha(counts_other_moderate),
+  "Other",                     "High",      sum_area_ha(counts_other_high)
+) %>%
+  mutate(
+    Category = factor(Category, levels = c(
+      "Forests and Woodlands","Moorlands and Heathlands","Peatlands","Other"
+    )),
+    Severity = factor(Severity, levels = c("Low","Moderate","High"))
+  )
+
+
+
+lab_map <- c(
+  "Forests and Woodlands"    = "Forests &\n Woodlands",
+  "Moorlands and Heathlands" = "Moorlands &\n Heathlands",
+  "Peatlands"                = "Bog",
+  "Other"                    = "Other"
+)
+
+pd <- position_dodge(width = 0.7)
+
+sev_cols <- c(
+  "Unchanged" = "#D9DDDC",  # same grey
+  "Low"       = "#FEE0D2",  # light red
+  "Moderate"  = "#FC9272",  # mid red
+  "Severe"    = "#CB181D"   # deeper, less neon than #FF0000
+)
+
+# small within-group gap, minimal between-group gap
+dodge_tight <- position_dodge2(width = 0.9, padding = 0.12, preserve = "single")
+
+p_bar_ba <- ggplot(plot_df, aes(x = Category, y = Area_ha, fill = Severity)) +
+  geom_col(
+    position = dodge_tight,
+    width    = 0.8,                 # wider bars -> smaller gap between groups
+    colour   = "black", linewidth = 0.2
+  ) +
+  scale_fill_manual(
+    values = c("Low"="#FEE0D2","Moderate"="#FC9272","High"="#CB181D"),
+    name   = "Burn severity (dNBR)"
+  ) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_x_discrete(
+    labels = lab_map,
+    expand = expansion(mult = c(0.01, 0.01))  # tiny edge padding only
+  ) +
+  labs(x = "Land cover type", y = "Burned area (ha)", title = NULL) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x  = element_text(angle = 0, hjust = 0.5, vjust = 1, lineheight = 0.95),
+    axis.title.x = element_text(margin = ggplot2::margin(t = 6)),
+    legend.position      = c(1, 0.5),
+    legend.justification = c("right", "top"),
+    legend.background    = element_rect(fill = scales::alpha("white", 0.85), colour = "grey60"),
+    legend.key.width     = unit(0.5, "cm"),
+    legend.key.height    = unit(0.5, "cm")
+  ) +
+  guides(
+    fill = guide_legend(
+      title.position = "top",
+      ncol = 1, byrow = TRUE,
+      keywidth  = unit(0.5, "cm"),
+      keyheight = unit(0.5, "cm")
+    )
+  )
+
+print(p_bar_ba)
+
+
+library(dplyr)
+library(tidyr)
+library(scales)
+
+# --- 1) Wide table by Category with totals and within-category % ---
+cat_wide <- plot_df %>%
+  group_by(Category, Severity) %>%
+  summarise(Area_ha = sum(Area_ha, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(
+    names_from  = Severity,
+    values_from = Area_ha,
+    values_fill = 0
+  ) %>%
+  mutate(
+    Total      = Low + Moderate + High,
+    Low_pct    = ifelse(Total > 0, Low      / Total, NA_real_),
+    Moderate_pct = ifelse(Total > 0, Moderate / Total, NA_real_),
+    High_pct   = ifelse(Total > 0, High     / Total, NA_real_)
+  ) %>%
+  arrange(Category)
+
+# Nicely formatted version (1 decimal for ha; % to 0.1%)
+cat_wide_fmt <- cat_wide %>%
+  mutate(
+    Low      = round(Low, 1),
+    Moderate = round(Moderate, 1),
+    High     = round(High, 1),
+    Total    = round(Total, 1),
+    Low_pct      = percent(Low_pct, accuracy = 0.1),
+    Moderate_pct = percent(Moderate_pct, accuracy = 0.1),
+    High_pct     = percent(High_pct, accuracy = 0.1)
+  )
+
+# Add a grand-total row (optional)
+grand_row <- plot_df %>%
+  group_by(Severity) %>% summarise(Area_ha = sum(Area_ha, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = Severity, values_from = Area_ha, values_fill = 0) %>%
+  mutate(
+    Category = "All categories",
+    Total    = Low + Moderate + High,
+    Low_pct      = Low      / Total,
+    Moderate_pct = Moderate / Total,
+    High_pct     = High     / Total
+  ) %>%
+  mutate(
+    Low      = round(Low, 1),
+    Moderate = round(Moderate, 1),
+    High     = round(High, 1),
+    Total    = round(Total, 1),
+    Low_pct      = percent(Low_pct, accuracy = 0.1),
+    Moderate_pct = percent(Moderate_pct, accuracy = 0.1),
+    High_pct     = percent(High_pct, accuracy = 0.1)
+  ) %>%
+  dplyr::select(Category, Low, Moderate, High, Total, Low_pct, Moderate_pct, High_pct)
+
+cat_summary <- bind_rows(cat_wide_fmt, grand_row)
+
+# --- 2) Totals by severity across all categories (with shares) ---
+sev_totals <- plot_df %>%
+  group_by(Severity) %>%
+  summarise(Area_ha = sum(Area_ha, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Share = Area_ha / sum(Area_ha)) %>%
+  mutate(
+    Area_ha = round(Area_ha, 1),
+    Share   = percent(Share, accuracy = 0.1)
+  )
+
+# Inspect in console
+cat_summary
+sev_totals
+
+
+```
+
+# Fire spread map
+
+```{r}
+library(ncdf4)
+library(dplyr)
+library(sf)
+library(terra)
+
+# Load fire perimeter
+fire_perim <- st_read("C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/burnt_area_effis/Dava_fire_perimeter.shp")
+fire_perim <- st_transform(fire_perim, crs = 4326)  # VIIRS is in lat/lon (EPSG:4326)
+
+# Function to extract and crop FRP points from a .nc file
+
+# Transform to UTM zone 30N
+fire_perim_m <- st_transform(fire_perim, 32630)
+
+# Buffer by 1 km
+fire_perim_buffered <- st_buffer(fire_perim_m, dist = 1000)
+
+# Transform back to WGS84 for VIIRS points
+fire_perim_buffered <- st_transform(fire_perim_buffered, 4326)
+
+
+
+
+process_viirs_nc <- function(nc_path) {
+  library(ncdf4)
+  library(dplyr)
+  library(sf)
+  
+  nc <- nc_open(nc_path)
+  
+  result <- tryCatch({
+    # Extract key variables
+    lat <- ncvar_get(nc, "FP_latitude")
+    lon <- ncvar_get(nc, "FP_longitude")
+    frp <- ncvar_get(nc, "FP_power")
+    nc_close(nc)
+    
+    # Skip empty files
+    if (length(frp) == 0 || all(is.na(frp))) {
+      message(basename(nc_path), ": No FRP data.")
+      return(NULL)
+    }
+    
+    # Extract date from filename (e.g. A2025173 → 2025-06-21)
+    filename <- basename(nc_path)
+    match <- regmatches(filename, regexpr("A\\d{7}", filename))
+    date_string <- sub("A", "", match)
+    year <- as.integer(substr(date_string, 1, 4))
+    doy  <- as.integer(substr(date_string, 5, 7))
+    date <- as.Date(paste0(year, "-01-01")) + doy - 1
+    
+    # Assemble data frame and filter valid FRP points
+    df <- data.frame(lon = lon, lat = lat, frp = frp, date = date) %>%
+      filter(!is.na(frp) & frp > 0)
+    
+    message(date, ": ", nrow(df), " detections before perimeter filter")
+    
+    if (nrow(df) == 0) return(NULL)
+    
+    # Convert to sf points
+    sf_points <- st_as_sf(df, coords = c("lon", "lat"), crs = 4326)
+    
+    # Check how many intersect fire perimeter
+    #inside_fire <- st_within(sf_points, fire_perim, sparse = FALSE) # unbuffered
+    inside_fire <- st_within(sf_points, fire_perim_buffered, sparse = FALSE) # buffered
+    message(date, ": ", sum(inside_fire), " detections inside perimeter")
+    
+    # Filter to points within perimeter
+    sf_points_in_fire <- sf_points[inside_fire, ]
+    
+    # Return empty sf if no detections in fire area
+    if (nrow(sf_points_in_fire) == 0) {
+      return(st_sf(frp = numeric(0), date = as.Date(character()), geometry = st_sfc(crs = 4326)))
+    }
+    
+    return(sf_points_in_fire)
+  },
+  error = function(e) {
+    message("Failed to process ", basename(nc_path), ": ", e$message)
+    nc_close(nc)
+    return(st_sf(frp = numeric(0), date = as.Date(character()), geometry = st_sfc(crs = 4326)))
+  })
+  
+  return(result)
+}
+
+
+# Folder of VIIRS .nc files
+viirs_folder <- "C:/Users/jscho/Documents/Scotland Megafire/VIIRS_images"
+viirs_files <- list.files(viirs_folder, pattern = "\\.nc$", full.names = TRUE)
+
+# Process all files and combine into one sf object
+library(purrr)
+all_points <- map_dfr(viirs_files, process_viirs_nc)
+
+
+
+
+# ----- DAILY FIRE SPREAD (one map) via cumulative concave hulls ---------------
+# --- Libraries (no lwgeom needed) ---
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(concaveman)
+
+# --- Assumes you already have: all_points (sf POINTs with 'date'), fire_perim (sf POLYGON) ---
+
+# 1) Reproject to metres (UTM 30N) and make a perimeter buffer for cropping
+pts_m         <- st_transform(all_points, 32630)
+fire_perim_m  <- st_transform(fire_perim, 32630)
+fire_buffer_m <- st_buffer(fire_perim_m, dist = 1000)   # 1 km buffer
+
+# 2) Daily concave hulls from POINTS (avoid MULTIPOINT to keep concaveman happy)
+dates <- sort(unique(as.Date(pts_m$date)))
+daily_hulls_list <- lapply(dates, function(d) {
+  pts_day <- pts_m[as.Date(pts_m$date) == d, ]
+  
+  # drop duplicate coordinates (can trip up hull algorithms)
+  pts_day <- pts_day[!duplicated(st_coordinates(pts_day)), ]
+  
+  if (nrow(pts_day) < 3) return(NULL)
+  
+  # concave hull from POINTS; fall back to convex hull if needed
+  hull <- tryCatch(
+    concaveman::concaveman(pts_day, concavity = 2, length_threshold = 0),
+    error = function(e) st_convex_hull(st_union(pts_day))
+  )
+  
+  # small smoothing buffer and clip to fire buffer
+  hull <- st_buffer(hull, 200)
+  hull <- suppressWarnings(st_intersection(hull, fire_buffer_m))
+  if (st_is_empty(hull)) return(NULL)
+  
+  st_sf(date = d, geometry = st_geometry(hull), crs = st_crs(hull))
+})
+
+if (length(daily_hulls_list) == 0 || all(sapply(daily_hulls_list, is.null))) {
+  stop("No daily hulls created — check inputs.")
+}
+
+daily_hulls <- do.call(rbind, daily_hulls_list) |> sf::st_make_valid()
+daily_hulls <- daily_hulls[order(daily_hulls$date), ]
+
+# Helper: convert a length-1 sfc to a single sfg, preserving empties
+to_sfg <- function(sfc1) {
+  if (sf::st_is_empty(sfc1)) return(sf::st_geometrycollection())
+  sf::st_geometry(sfc1)[[1]]
+}
+
+# 3) CUMULATIVE footprint: union day-by-day, carefully building sfg list
+geoms <- daily_hulls$geometry                     # sfc
+cum_sfg_list <- vector("list", length(geoms))
+acc <- NULL
+for (i in seq_along(geoms)) {
+  g    <- geoms[i]
+  acc  <- if (is.null(acc)) g else sf::st_union(acc, g)  # sfc length 1
+  cum_sfg_list[[i]] <- to_sfg(acc)                       # sfg
+}
+cum_sfc <- sf::st_sfc(cum_sfg_list, crs = sf::st_crs(daily_hulls))
+daily_cum <- sf::st_sf(date = daily_hulls$date, geometry = cum_sfc) |>
+  sf::st_make_valid()
+
+# 4) DAILY INCREMENTS: today minus yesterday, again building sfgs safely
+inc_sfg_list <- vector("list", length(cum_sfc))
+prev <- NULL
+for (i in seq_along(cum_sfc)) {
+  cur <- cum_sfc[i]
+  sfc_res <- if (is.null(prev)) cur else sf::st_difference(cur, prev)  # sfc len 1
+  inc_sfg_list[[i]] <- to_sfg(sfc_res)                                 # sfg
+  prev <- cur
+}
+inc_sfc <- sf::st_sfc(inc_sfg_list, crs = sf::st_crs(daily_cum))
+daily_inc <- sf::st_sf(date = daily_cum$date, geometry = inc_sfc) |>
+  sf::st_make_valid() |>
+  # keep polygons only; drop lines/points/empties
+  sf::st_collection_extract("POLYGON", warn = FALSE)
+
+# 5) Quick QA: areas (ha)
+daily_cum$area_ha <- as.numeric(sf::st_area(daily_cum)) / 1e4
+daily_inc$area_ha <- as.numeric(sf::st_area(daily_inc)) / 1e4
+print(head(daily_cum[, c("date","area_ha")]))
+print(head(daily_inc[, c("date","area_ha")]))   # may be 0/empty for some days
+
+# 6) Plots — single map each
+labels_date <- function(x) format(as.Date(x, origin = "1970-01-01"), "%d %b")
+
+p_cum <- ggplot() +
+  geom_sf(data = daily_cum, aes(fill = date), colour = NA, alpha = 0.7) +
+  geom_sf(data = fire_perim_m, fill = NA, colour = "black", linewidth = 0.6) +
+  scale_fill_viridis_c(option = "magma", direction = -1,
+                       name = "Cumulative\nfootprint",
+                       labels = labels_date) +
+  coord_sf(crs = sf::st_crs(fire_perim_m)) +
+  labs(title = "Daily fire spread (cumulative VIIRS footprint)", x = NULL, y = NULL) +
+  theme_classic(base_size = 11) + theme(panel.grid = element_blank())
+
+p_inc <- ggplot() +
+  geom_sf(data = daily_inc, aes(fill = date), colour = "white", linewidth = 0.2, alpha = 0.9) +
+  geom_sf(data = fire_perim_m, fill = NA, colour = "black", linewidth = 0.6) +
+  scale_fill_viridis_c(option = "mako", direction = -1,
+                       name = "New area\nby date",
+                       labels = labels_date) +
+  coord_sf(crs = sf::st_crs(fire_perim_m)) +
+  labs(title = "Daily fire spread increments (VIIRS)", x = NULL, y = NULL) +
+  theme_classic(base_size = 11) + theme(panel.grid = element_blank())
+
+
+
+library(sf)
+library(ggplot2)
+library(ggspatial)
+library(grid)      # unit()
+library(scales)
+
+# --- Ensure we have a WGS84 version of the layers used to plot -------------
+# daily_inc: sf POLYGONS with a date (or date_f) column
+# fire_perim_m: perimeter in metres (e.g., UTM); reproject to 4326 for axes
+daily_inc_ll <- sf::st_transform(daily_inc, 4326)
+perim_ll     <- sf::st_transform(fire_perim_m, 4326)
+
+# Common bbox for tight framing
+bb <- sf::st_bbox(perim_ll)
+
+# --- Date factor + red palette ---------------------------------------------
+if (!"date_f" %in% names(daily_inc_ll)) {
+  dts <- sort(unique(as.Date(daily_inc_ll$date)))
+  daily_inc_ll$date_f <- factor(daily_inc_ll$date,
+                                levels = dts,
+                                labels = format(dts, "%d %b"))
+}
+lvls  <- levels(daily_inc_ll$date_f)
+reds3 <- c("#0072B2", "#E69F00", "#009E73")
+pal   <- if (length(lvls) <= 3) reds3[seq_along(lvls)] else
+         grDevices::colorRampPalette(reds3)(length(lvls))
+mycol <- setNames(pal, lvls)
+
+# --- Axes label helpers (deg + E/W, N/S) -----------------------------------
+label_lon <- function(x) sprintf("%.3f°%s", abs(x), ifelse(x < 0, "W", "E"))
+label_lat <- function(y) sprintf("%.3f°%s", abs(y), ifelse(y < 0, "S", "N"))
+
+# --- Plot (layout cloned from p_sev) ---------------------------------------
+p_inc2 <- ggplot() +
+  geom_sf(data = daily_inc_ll, aes(fill = date_f),
+          colour = "white", linewidth = 0.2, alpha = 0.9) +
+  geom_sf(data = perim_ll, fill = NA, colour = "black", linewidth = 0.03) +
+  scale_fill_manual(values = mycol, name = "Fire spread (VIIRS)\nby date", drop = FALSE) +
+  coord_sf(
+    crs  = sf::st_crs(4326),
+    xlim = c(bb["xmin"], bb["xmax"]),
+    ylim = c(bb["ymin"], bb["ymax"]),
+    expand = FALSE
+  ) +
+  # Axes: latitude/longitude
+  scale_x_continuous(labels = label_lon, expand = c(0,0)) +
+  scale_y_continuous(labels = label_lat, expand = c(0,0)) +
+  labs(x = "Longitude (°)", y = "Latitude (°)", title = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid           = element_blank(),
+    panel.background     = element_rect(fill = "white", colour = NA),
+    plot.background      = element_rect(fill = "white", colour = NA),
+    # Legend inside, bottom-right, vertical (same sizing/box as p_sev)
+    legend.position      = c(0.85, 0.1),
+    legend.justification = c("right","bottom"),
+    legend.direction     = "vertical",
+    legend.background    = element_rect(fill = scales::alpha("white", 0.85),
+                                        colour = "grey60"),
+    legend.title         = element_text(),
+    legend.key.width     = unit(0.55, "cm"),
+    legend.key.height    = unit(0.55, "cm")
+  ) +
+  guides(
+    fill = guide_legend(
+      ncol = 1, byrow = TRUE, title.position = "top",
+      keywidth  = unit(0.55, "cm"),
+      keyheight = unit(0.55, "cm")
+    )
+  ) +
+  # Scale bar: bottom-centre (anchor at BL + big pad_x), same as p_sev
+  ggspatial::annotation_scale(
+    location   = "bl",
+    width_hint = 0.28,
+    pad_x      = unit(0.58, "npc"),
+    pad_y      = unit(0.35, "cm"),
+    bar_cols   = c("grey90","grey30")
+  ) +
+  # North arrow: bottom-right, simple orienteering style, same size/offsets
+  ggspatial::annotation_north_arrow(
+    location = "br", style = north_arrow_orienteering,
+    pad_x = unit(0.3, "cm"), pad_y = unit(0.2, "cm"),
+    height = unit(0.5, "cm"), width = unit(0.3, "cm")
+  )
+
+print(p_inc2)
+
+# --- (Optional) Save to EMF (A4 landscape width) ---------------------------
+library(devEMF)
+out_emf <- "C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/Figures/daily_increments_layout_like_sev.emf"
+ggsave(
+  filename  = out_emf,
+  plot      = p_inc2,
+  device    = function(filename, ...) devEMF::emf(filename, emfPlus = TRUE, family = "Arial", ...),
+  width     = 210, height = 150, units = "mm",   # A4 landscape
+  bg        = "white",
+  limitsize = FALSE
+)
+
+
+
+
+
+
+
+
+```
+
+# Figure 2 4 panels
+
+```{r}
+library(cowplot)
+library(grid)
+library(scales)
+
+# add some space between x tick labels and the x-axis title
+p_emis <- p_emis +
+  theme(
+    axis.title.x = element_text(margin = ggplot2::margin(t = 25))  # increase if you want more
+    #axis.title.y = element_text(margin = ggplot2::margin(r = 8))   # optional: space before y title
+  )
+
+# do the same for p_sev to keep both maps consistent
+p_sev <- p_sev +
+  theme(
+    axis.title.x = element_text(margin = ggplot2::margin(t = 20))
+    #axis.title.y = element_text(margin = ggplot2::margin(r = 8))
+  )
+
+# --- shrink x-axis labels on the bar plots (no angle) ---
+shrink_x <- theme(
+  axis.text.x  = element_text(size = 8.5, lineheight = 0.95, margin = ggplot2::margin(t = 4)),
+  axis.title.x = element_text(margin = ggplot2::margin(t = 6))
+)
+p_bar_ba        <- p_bar_ba        + shrink_x
+p_bar_emissions <- p_bar_emissions + shrink_x
+
+# --- keep p_emis axis labels at 2 decimals to match p_sev ---
+label_lon <- scales::label_number(accuracy = 0.01, suffix = "°")
+label_lat <- scales::label_number(accuracy = 0.01, suffix = "°")
+p_emis <- p_emis +
+  scale_x_continuous(labels = label_lon, expand = c(0,0)) +
+  scale_y_continuous(labels = label_lat, expand = c(0,0))
+
+# --- make bar plots slightly shorter (but not squished) ---
+short_ratio <- 0.85
+p_bar_ba        <- p_bar_ba        + theme(aspect.ratio = short_ratio)
+p_bar_emissions <- p_bar_emissions + theme(aspect.ratio = short_ratio)
+
+# --- small, consistent plot margins to minimize row gap ---
+pad_top_row <- ggplot2::margin(4, 6, 2, 6)
+pad_bot_row <- ggplot2::margin(2, 6, 4, 6)
+p_sev            <- p_sev            + theme(plot.margin = pad_top_row)
+p_bar_ba         <- p_bar_ba         + theme(plot.margin = pad_top_row)
+p_emis           <- p_emis           + theme(plot.margin = pad_bot_row)
+p_bar_emissions  <- p_bar_emissions  + theme(plot.margin = pad_bot_row)
+
+
+# Nudge a plot UP (axis too low): add bottom margin
+nudge_up   <- theme(plot.margin = ggplot2::margin(t = 0, r = 6, b = 12, l = 6))
+
+# Nudge a plot DOWN (axis too high): add top margin
+nudge_down <- theme(plot.margin = ggplot2::margin(t = 11, r = 6, b = 0,  l = 6))
+
+# Example: if the barplot axis is lower than the map’s axis
+p_bar_ba <- p_bar_ba + nudge_down     # moves the barplot panel up a bit
+# OR instead:
+p_bar_emissions    <- p_bar_emissions    + nudge_down   # moves the map panel down a bit
+
+
+# --- ALIGNMENT (within rows) ---
+# Align the two plots in EACH ROW vertically so their x-axes line up
+row1 <- align_plots(p_sev,        p_bar_ba,        align = "v", axis = "tb")
+row2 <- align_plots(p_emis,       p_bar_emissions, align = "v", axis = "tb")
+
+# Build each row from its aligned pair (keep your aspect.ratio settings)
+top_row    <- plot_grid(row1[[1]], row1[[2]], ncol = 2, rel_widths = c(1, 1))
+bottom_row <- plot_grid(row2[[1]], row2[[2]], ncol = 2, rel_widths = c(1, 1))
+
+# Stack rows; add labels
+combo_2x2 <- plot_grid(top_row, bottom_row, ncol = 1, rel_heights = c(1, 1))
+combo_2x2 <- ggdraw(combo_2x2) +
+  draw_plot_label(
+    label  = c("a)", "b)", "c)", "d)"),
+    x      = c(0.02, 0.52, 0.02, 0.52),
+    y      = c(0.98, 0.98, 0.49, 0.49),
+    hjust  = 0, vjust = 1,
+    fontface = "bold", size = 12
+  )
+
+# --- save (A4 portrait-ish) ---
+library(devEMF)
+ggsave(
+  filename  = paste0(here(),"/Figures/four_panel_portrait_revised.emf"),
+  plot      = combo_2x2,
+  device    = function(filename, ...) devEMF::emf(filename, emfPlus = TRUE, family = "Arial", ...),
+  width     = 8.27, height = 8, units = "in",
+  bg        = "white",
+  limitsize = FALSE
+)
+
+# --- save (A4 portrait-ish) as PDF ---
+
+ggsave(
+  filename = paste0(here(),"/Figures/four_panel_portrait_revised.pdf"),
+  plot     = combo_2x2,
+  device   = cairo_pdf,        # vector PDF with good font support
+  width    = 8.27, height = 8, units = "in",
+  bg       = "white",
+  limitsize = FALSE
+)
+
+
+```
+
+
+
+
+
+
+
