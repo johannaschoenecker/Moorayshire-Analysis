@@ -92,7 +92,7 @@ pal <- c("Unchanged" = "#D9DDDC",
 
 labels <- c("Unchanged","Low","Moderate","Severe")
 
-# ===================== LOAD RASNERS (OR MOSAIC) =====================
+# ===================== LOAD RASTERS (OR MOSAIC) =====================
 rdnbr_raw <- read_or_mosaic(rdnbr_file, pattern = "RdNBR.*\\.tif$")
 dnbr_raw  <- read_or_mosaic(dnbr_file,  pattern = "dNBR.*\\.tif$")
 
@@ -128,6 +128,7 @@ if (!is.null(rdnbr_3035)) {
 #   Low:       0.100–0.269
 #   Moderate:  0.269–0.439
 #   Severe:    >= 0.439
+
 if (!is.null(dnbr_3035)) {
   rcl_dnbr_unscaled <- matrix(c(
     -Inf, 0.100, 1,
@@ -144,35 +145,3 @@ if (!is.null(dnbr_3035)) {
     pal = pal
   )
 }
-
-message("Done.")
-
-# Colors & labels (order must match class IDs 1..4)
-# Colors & labels
-labels <- c("Unchanged","Low","Moderate","Severe")
-cols   <- c("#D9DDDC","#ECEC0E","#F5BE16","#FF0000")
-
-pdf(file.path(out_dir, "Carr_RdNBR_dNBR_vertical_sharedLegend.pdf"),
-    width = 8, height = 10)  # size in inches; adjust if needed
-
-layout(matrix(c(1,2,3), nrow = 3, byrow = TRUE),
-       heights = c(1, 1, 0.25))
-
-# Map panels
-par(mar = c(3,3,3,3))
-plot(rdnbr_cls, col = cols, legend = FALSE, main = "RdNBR"); lines(perim, lwd = 1.2)
-plot(dnbr_cls,  col = cols, legend = FALSE, main = "dNBR");  lines(perim, lwd = 1.2)
-
-# Legend panel
-par(mar = c(0,0,0,0))
-plot.new()
-legend("center",
-       legend = labels,
-       fill   = cols,
-       ncol   = 4,
-       bty    = "n",
-       title  = "Burn severity",
-       cex    = 1.1)
-
-dev.off()
-

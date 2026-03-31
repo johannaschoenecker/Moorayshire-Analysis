@@ -195,7 +195,7 @@ lc_names <- c(
 lc_lookup <- setNames(lc_names, lc_codes)
 combo_counts[, lc_name := lc_lookup[as.character(lc)]]
 
-# Adjust if your dNBR classes use different codes/labels
+# Adjust if dNBR classes use different codes/labels
 sev_lookup <- setNames(c("Unchanged","Low","Moderate","Severe"), 1:4)
 combo_counts[, sev_name := sev_lookup[as.character(sev)]]
 
@@ -293,7 +293,7 @@ counts_other_high <- counts_other %>%
 ### CARBON bulk densities (carbon concentration x soil bulk density) in kg/m3
 bulk_density_peat <- 68.64 #38  # From Abernethy
 bulk_density_moorlands <- 68.64 #58 # From Glenmore
-combustion_coeff <- 0.5
+combustion_coeff <- 0.5 #1
 
 
 # Include field-measured mean burn depths for peatlands and moorlands, for each severity class
@@ -499,7 +499,7 @@ sum(out$totalCemissions_tC_Q75)
 ### CARBON bulk densities (carbon concentration x soil bulk density) in kg/m3
 bulk_density_peat <- 38  # From Abernethy
 bulk_density_moorlands <- 58 # From Glenmore
-combustion_coeff <- 0.5
+combustion_coeff <- 1 #0.5
 
 
 # Include field-measured mean burn depths for peatlands and moorlands, for each severity class
@@ -694,3 +694,7 @@ sum(out$totalCemissions_tC)
 sum(out$totalCemissions_tC_Q25)
 sum(out$totalCemissions_tC_med)
 sum(out$totalCemissions_tC_Q75)
+
+# Total AG emissions
+sum(out$Woodland)+sum(out$`Moorland and Heathland`)+sum(out$Other) +sum(out$`AG peatland`)
+

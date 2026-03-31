@@ -18,8 +18,8 @@ library(dplyr)
 library(tidyr)
 
 # ---- Inputs ----
-csv_path    <- "C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/C Emissions Sarah/C_emissions_Dava_moor_fire.csv"
-tif_path    <- "C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/Land cover map/ukregion-scotland.tif"
+csv_path    <- paste0(here(),"/Data/C Emissions Sarah/C_emissions_Dava_moor_fire.csv")
+tif_path    <- paste0(here(),"/Data/Land cover map/ukregion-scotland.tif")
 
 square_size <- 240   # metres (edge length of the square)
 interval    <- 10    # metres (spacing of the sample grid)
@@ -132,7 +132,7 @@ cat("Wrote fractions:", out_fracs,  "\n")
 # ────────────────────────────────────────────────────────────────────────────────
 
 # ---- 1) Load dNBR classes (categorical) ----
-dnbr_path <- "C:/Users/jscho/Documents/Scotland Megafire/Burn severity Sentinel-2/Carr_dNBR_class_unscaled_3035.tif"
+dnbr_path <- paste0(here(),"/Data/Burn severity Sentinel-2/Carr_dNBR_class_unscaled_3035.tif")
 dnbr <- terra::rast(dnbr_path)
 if (terra::nlyr(dnbr) > 1) dnbr <- dnbr[[1]]         # use first band if multi-band
 dnbr_crs <- terra::crs(dnbr)
@@ -404,7 +404,7 @@ library(data.table)
 library(dplyr)
 
 # --- Inputs ---
-base_path <- "C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/C Emissions Sarah/C_emissions_Dava_moor_fire.csv"
+base_path <- paste0(here(),"/Data/C Emissions Sarah/C_emissions_Dava_moor_fire.csv")
 
 # counts_peatlands_total and counts_moorlands_total are assumed to be
 # already in your R session and to contain columns:
@@ -471,7 +471,7 @@ out$totalCemissions_tC_med <- out$Woodland + out$Other + out$peat_AG_BG_med + ou
 out$totalCemissions_tC_Q75 <- out$Woodland + out$Other + out$peat_AG_BG_Q75 + out$moor_AG_BG_Q75
 
 
-fwrite(out,"C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/Dava_total_emissions_AG_BG_field_BD.csv")
+fwrite(out,paste0(here(),"/Data/Dava_total_emissions_AG_BG_field_BD.csv"))
 
 sum(out$totalCemissions_tC)
 sum(out$totalCemissions_tC_Q25)
