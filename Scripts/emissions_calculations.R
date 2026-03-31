@@ -16,6 +16,7 @@
 #   *_LC_10m_fractions.csv  (per-centre fractions per class; rows sum ~1)
 # ------------------------------------------------------------------
 
+# ---- Load packages ----
 library(terra)
 library(sf)
 library(data.table)
@@ -34,7 +35,7 @@ square_size <- 240   # metres (edge length of the square)
 interval    <- 10    # metres (spacing of the sample grid)
 center_epsg <- 27700 # EPSG of x/y in the CSV (BNG = 27700)
 
-write_raw_points <- TRUE  # set FALSE if you don't want the big points CSV
+write_raw_points <- TRUE
 
 # ---- Read raster (band 1) ----
 r <- terra::rast(tif_path)
