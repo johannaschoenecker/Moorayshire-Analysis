@@ -76,12 +76,12 @@ val_col <- names(vals)[1]
 points_df[, lc := as.integer(vals[[val_col]])]
 rm(vals); gc()
 
-# ---- (Optional) write raw sampled points (in raster CRS) ----
-if (write_raw_points) {
-  out_points <- sub("\\.csv$", "_LC_10m_points.csv", csv_path)
-  data.table::fwrite(points_df, out_points)
-  cat("Wrote raw points:", out_points, "\n")
-}
+# Optional: write raw sampled points (in raster CRS) 
+# if (write_raw_points) {
+#   out_points <- sub("\\.csv$", "_LC_10m_points.csv", csv_path)
+#   data.table::fwrite(points_df, out_points)
+#   cat("Wrote raw points:", out_points, "\n")
+# }
 
 # ---- Summarise: counts per centre per class ----
 counts_long <- points_df[!is.na(lc), .N, by = .(ID, lc)]
@@ -114,13 +114,13 @@ for (cc in class_cols) {
 }
 
 
-# ---- Write outputs ----
+# Optional: write outputs 
 out_counts <- sub("\\.csv$", "_LC_10m_counts.csv",    csv_path)
 out_fracs  <- sub("\\.csv$", "_LC_10m_fractions.csv", csv_path)
 
-data.table::fwrite(counts_wide, out_counts)
-data.table::fwrite(fracs_wide[, c("ID","n_sampled", class_cols, setdiff(names(fracs_wide), c("ID","n_sampled", class_cols))), with = FALSE],
-                   out_fracs)
+#data.table::fwrite(counts_wide, out_counts)
+#data.table::fwrite(fracs_wide[, c("ID","n_sampled", class_cols, setdiff(names(fracs_wide), c("ID","n_sampled", class_cols))), with = FALSE],
+#                   out_fracs)
 
 cat("Wrote counts:   ", out_counts, "\n")
 cat("Wrote fractions:", out_fracs,  "\n")
@@ -470,8 +470,8 @@ out$totalCemissions_tC_Q25 <- out$Woodland + out$Other + out$peat_AG_BG_Q25 + ou
 out$totalCemissions_tC_med <- out$Woodland + out$Other + out$peat_AG_BG_med + out$moor_AG_BG_med
 out$totalCemissions_tC_Q75 <- out$Woodland + out$Other + out$peat_AG_BG_Q75 + out$moor_AG_BG_Q75
 
-
-fwrite(out,paste0(here(),"/Data/Dava_total_emissions_AG_BG_field_BD.csv"))
+# Optional: save emissions dataframe
+#fwrite(out,paste0(here(),"/Data/Dava_total_emissions_AG_BG_field_BD.csv"))
 
 sum(out$totalCemissions_tC)
 sum(out$totalCemissions_tC_Q25)

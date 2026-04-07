@@ -1,11 +1,12 @@
 # --- Scotland Dava-Carrbridge Fire — Sentinel-2 burn severity (UNSCALED thresholds) ---
 library(terra)
 library(tidyr)
+library(here)
 
 # ===================== INPUTS =====================
-in_dir    <- "C:/Users/jscho/Documents/Scotland Megafire/Burn severity Sentinel-2"
+in_dir    <- paste0(here(),"/Data/Burn severity Sentinel-2")
 out_dir   <- in_dir
-perim_shp <- "C:/Users/jscho/OneDrive - University of Cambridge/Moorayshire Wildfire Data/burnt_area_effis/Dava_fire_perimeter.shp"
+perim_shp <- paste0(here(),"/Data/burnt_area_effis/Dava_fire_perimeter.shp")
 
 # If these exact files exist they'll be used; otherwise we'll mosaic matching patterns below.
 rdnbr_file <- file.path(in_dir, "Carr_RdNBR.tif")
@@ -85,11 +86,12 @@ classify_write_plot_area <- function(x, rcl, labels, base_name, pal) {
 }
 
 # ===================== PALETTE =====================
-pal <- c("Unchanged" = "#D9DDDC",
-         "Low"       = "#ECEC0E",
-         "Moderate"  = "#F5BE16",
-         "Severe"    = "#FF0000")
-
+pal <- c(
+  "Unchanged" = "#D9DDDC",  # same grey
+  "Low"       = "#FEE0D2",  # light red
+  "Moderate"  = "#F56D43",  # mid red
+  "Severe"    = "#A50026"   # deeper, less neon than #FF0000
+)
 labels <- c("Unchanged","Low","Moderate","Severe")
 
 # ===================== LOAD RASTERS (OR MOSAIC) =====================
